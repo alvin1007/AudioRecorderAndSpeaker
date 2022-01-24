@@ -1,172 +1,81 @@
-#define _CRT_SECURE_NO_WARNINGS
-#include <Windows.h>
 #include <iostream>
-#include <mmdeviceapi.h>
-#include <Audioclient.h>
-#include <audiopolicy.h>
-#include <atlstr.h>
-#include <functiondiscoverykeys_devpkey.h>
-#include <time.h>
-#include <cstdio>
+#include <Windows.h>
+#include <MMSystem.h>
+using namespace std;
 
-#define REFTIMES_PER_SEC  10000000
-#define REFTIMES_PER_MILLISEC  10000
+#pragma comment(lib, "winmm.lib")
+#pragma comment(lib, "ws2_32")
 
-#define SAFE_RELEASE(punk)  \
-              if ((punk) != NULL)  \
-                { (punk)->Release(); (punk) = NULL; }
-
-WAVEFORMATEX* MixFormat(WAVEFORMATEXTENSIBLE* _MixFormat) { return &(_MixFormat->Format); }
-UINT32 SamplesPerSecond(WAVEFORMATEXTENSIBLE* _MixFormat) { return _MixFormat->Format.nSamplesPerSec; }
-UINT32 BytesPerSample(WAVEFORMATEXTENSIBLE* _MixFormat) { return _MixFormat->Format.wBitsPerSample / 8; }
-
-void Write_WAV(BYTE* data, int dataSize)
-{
-    FILE* fp;
-    const BYTE RIFF[] = { 'R', 'I', 'F', 'F' };
-    const int RIFF_Chunksize = dataSize + 32;
-    const BYTE WAVE[] = { 'W', 'A', 'V', 'E' };
-    const BYTE FMT[] = { 'f', 'm', 't', ' ' };
-    const int FMT_Chuncksize = 16;
-    const BYTE FMT_AudioFormat[] = { 0x01, 0x00 }; //little
-    const BYTE FMT_NumberOfChannel[] = { 0x02, 0x00 }; //little
-    const int FMT_SampleRate = 44100;
-    const int FMT_ByteRate = 352800;
-    const BYTE FMT_BlockAlign[] = { 0x04, 0x00 }; // little
-    const BYTE FMT_BitPerSample[] = { 0x08, 0x00 }; //little
-    const BYTE WaveData[] = { 'd', 'a', 't', 'a' };
-    unsigned long littleEndian_datasize = dataSize;
-
-    fp = fopen("D:\\test.wav", "w");
-    fwrite(RIFF, 1, 4, fp);
-    fwrite(&RIFF_Chunksize, 1, 4, fp);
-    fwrite(WAVE, 1, 4, fp);
-    fwrite(FMT, 1, 4, fp);
-    fwrite(&FMT_Chuncksize, 1, 4, fp);
-    fwrite(FMT_AudioFormat, 1, 2, fp);
-    fwrite(FMT_NumberOfChannel, 1, 2, fp);
-    fwrite(&FMT_SampleRate, 1, 4, fp);
-    fwrite(&FMT_ByteRate, 1, 4, fp);
-    fwrite(FMT_BlockAlign, 1, 2, fp);
-    fwrite(FMT_BitPerSample, 1, 2, fp);
-    fwrite(WaveData, 1, 4, fp);
-    fwrite(&littleEndian_datasize, 1, 4, fp);
-    fwrite(data, 1, dataSize, fp);
-    // fprintf(fp, (const char*)WaveData);
-
-}
 
 int main()
 {
-    HRESULT hr;
+	const int NUMPTS = 44100 * 10;
+	int sampleRate = 44100;
+	short int waveIn[NUMPTS];
 
-    IPropertyStore* propertyStore = nullptr;
-    PROPVARIANT name;
+	HWAVEIN hWaveIn;
+	WAVEHDR WaveInHdr;
+	MMRESULT result;
+	HWAVEOUT hWaveOut;
 
-    IMMDeviceEnumerator* m_DeviceEnumerator = nullptr;
-    IAudioClient* m_AudioClient = nullptr;
-    IAudioCaptureClient* m_CaptureClient = nullptr;
-    IMMDevice* CaptureDevice;
+	WAVEFORMATEX pFormat;
+	pFormat.wFormatTag = WAVE_FORMAT_PCM;
+	pFormat.nChannels = 2;
+	pFormat.nSamplesPerSec = sampleRate;
+	pFormat.nAvgBytesPerSec = 4 * sampleRate;
+	pFormat.nBlockAlign = 4;
+	pFormat.wBitsPerSample = 16;
+	pFormat.cbSize = 0;
 
-    WAVEFORMATEXTENSIBLE* TargetFormat;
-    int FrameSize;
-    UINT32 TargetLatency = 20;
-    int TargetDuration = 10;
+	result = waveInOpen(&hWaveIn, WAVE_MAPPER, &pFormat, 0, 0, WAVE_FORMAT_DIRECT);
 
-    UINT32 BufferSize;
+	if (result)
+	{
+		char fault[256];
+		waveInGetErrorTextA(result, fault, 256);
+		MessageBoxA(NULL, fault, "Failed to open waveform input device.", MB_OK | MB_ICONEXCLAMATION);
+		return 1;
+	}
 
-    size_t CaptureBufferSize;
+	WaveInHdr.lpData = (LPSTR)waveIn;
+	WaveInHdr.dwBufferLength = 2 * NUMPTS;
+	WaveInHdr.dwBytesRecorded = 0;
+	WaveInHdr.dwUser = 0;
+	WaveInHdr.dwFlags = 0;
+	WaveInHdr.dwLoops = 0;
+	waveInPrepareHeader(hWaveIn, &WaveInHdr, sizeof(WAVEHDR));
 
-    hr = CoInitialize(NULL);
-    hr = CoCreateInstance(__uuidof(MMDeviceEnumerator), NULL, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&m_DeviceEnumerator);
+	result = waveInAddBuffer(hWaveIn, &WaveInHdr, sizeof(WAVEHDR));
+	if (result)
+	{
+		MessageBoxA(NULL, "Failed to read block from device", NULL, MB_OK | MB_ICONEXCLAMATION);
+		return 1;
+	}
 
-    // Device Setup
-    hr = m_DeviceEnumerator->GetDefaultAudioEndpoint(eRender, eConsole, &CaptureDevice);
+	result = waveInStart(hWaveIn);
+	if (result)
+	{
+		MessageBoxA(NULL, "Failed to start recording", NULL, MB_OK | MB_ICONEXCLAMATION);
+		return 1;
+	}
 
-    hr = CaptureDevice->OpenPropertyStore(STGM_READ, &propertyStore);
-    PropVariantInit(&name);
-    hr = propertyStore->GetValue(PKEY_Device_FriendlyName, &name);
-    std::cout << CW2A(name.pwszVal) << std::endl;
+	cout << "Recording..." << endl;
+	Sleep((NUMPTS / sampleRate) * 1000); //Sleep while recording
 
-    hr = CaptureDevice->Activate(__uuidof(IAudioClient), CLSCTX_ALL, NULL, (void**)&m_AudioClient);
-    if (FAILED(hr))
-        std::cout << "Error Activate" << std::endl;
+	cout << "Playing..." << endl;
 
-    // Load Format
-    hr = m_AudioClient->GetMixFormat((WAVEFORMATEX**)&TargetFormat);
-    if (FAILED(hr))
-        std::cout << "Error GetMixFormat" << std::endl;
+	if (waveOutOpen(&hWaveOut, WAVE_MAPPER, &pFormat, 0, 0, WAVE_FORMAT_DIRECT))
+	{
+		MessageBoxA(NULL, "Failed to replay", NULL, MB_OK | MB_ICONEXCLAMATION);
+	}
 
-    FrameSize = (TargetFormat->Format.wBitsPerSample / 8) * TargetFormat->Format.nChannels;
+	waveOutWrite(hWaveOut, &WaveInHdr, sizeof(WaveInHdr)); //<-- The line I forgot before
+	Sleep((NUMPTS / sampleRate) * 1000); //Sleep for as long as there was recorded
 
-    hr = m_AudioClient->Initialize(AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK, TargetLatency * 10000, 0, MixFormat(TargetFormat), NULL);
-    if (FAILED(hr))
-        std::cout << "Error Initialize" << std::endl;
+	waveOutUnprepareHeader(hWaveOut, &WaveInHdr, sizeof(WAVEHDR));
+	waveInUnprepareHeader(hWaveIn, &WaveInHdr, sizeof(WAVEHDR));
+	waveInClose(hWaveIn);
+	waveOutClose(hWaveOut);
 
-    hr = m_AudioClient->GetBufferSize(&BufferSize);
-    if (FAILED(hr))
-        std::cout << "Error GetBufferSize" << std::endl;
-
-    hr = m_AudioClient->GetService(__uuidof(IAudioCaptureClient), (void**)&m_CaptureClient);
-    if (FAILED(hr))
-        std::cout << "Error GetService" << std::endl;
-
-    // Capture Start
-    CaptureBufferSize = SamplesPerSecond(TargetFormat) * TargetDuration * FrameSize;
-    std::cout << CaptureBufferSize << std::endl;
-    BYTE* CaptureBuffer = new BYTE[CaptureBufferSize];
-
-    hr = m_AudioClient->Start();
-    if (FAILED(hr))
-        std::cout << "Error Start" << std::endl;
-
-    bool Playing = true;
-    time_t start = time(NULL), end;
-    UINT CurrentBufferIndex = 0;
-    UINT32 framesAvailable;
-    DWORD  flags;
-    BYTE* data;
-    UINT32 packetLength = 0;
-
-    std::cout << TargetDuration << "초 녹음을 시작합니다." << std::endl;
-    while (Playing)
-    {
-        Sleep(30);
-        end = time(NULL);
-
-        if (end - start >= TargetDuration)
-        {
-            hr = m_AudioClient->Stop();
-            if (FAILED(hr))
-                std::cout << "Error Stop" << std::endl;
-            std::cout << sizeof(CaptureBuffer) << std::endl;
-            Playing = false;
-            break;
-        }
-
-        hr = m_CaptureClient->GetBuffer(&data, &framesAvailable, &flags, NULL, NULL);
-        if (FAILED(hr))
-        {
-            std::cout << "녹음 된 바이트를 얻지 못했습니다." << std::endl;
-            break;
-        }
-
-        const UINT BytesToCopy = framesAvailable * FrameSize;
-
-        if (BytesToCopy == 0)
-            continue;
-
-        if (flags & AUDCLNT_BUFFERFLAGS_SILENT)
-            ZeroMemory(&CaptureBuffer[CurrentBufferIndex], BytesToCopy);
-        else
-            CopyMemory(&CaptureBuffer[CurrentBufferIndex], data, BytesToCopy);
-
-        CurrentBufferIndex += BytesToCopy;
-        hr = m_CaptureClient->ReleaseBuffer(framesAvailable);
-    }
-    std::cout << CurrentBufferIndex << std::endl;
-
-    Write_WAV(CaptureBuffer, CurrentBufferIndex);
-
-    return 0;
+	return 0;
 }
